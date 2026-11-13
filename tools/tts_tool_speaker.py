@@ -19,6 +19,7 @@ import platform
 import queue
 import tempfile
 import threading
+import time
 from concurrent.futures import Future, ThreadPoolExecutor
 from typing import Callable, Iterable, Iterator, List, Optional
 
@@ -58,10 +59,12 @@ def _play_via_tempfile(audio_iter: Iterable[bytes], stop_evt: threading.Event, s
         # wave.open() on a file object does NOT close it; on Windows the open write
         # handle blocks the player and the unlink below (WinError 32).
         tmp.close()
+        if stop_evt.is_set():  # a barge-in landed while the WAV was written: never start the player
+            return
         from tools.voice_mode import play_audio_file
         play_audio_file(tmp_path)
     except Exception as exc:
-        logger.warning("Temp-file TTS fallback failed: %s", exc)
+        logger.warning("Temp-file TTS fallback failed: %s: %s", type(exc).__name__, exc)
     finally:
         if tmp is not None:
             with contextlib.suppress(Exception):
@@ -164,6 +167,7 @@ class _StreamerPlayback:
 
     _MAX_REINIT = 3
     _CHUNK_QUEUE_MAX = 64
+    _sentence_count = 0  # 1-based index of the last sentence handed to speak(), for logs
 
     def __init__(self, streamer, stop_event: threading.Event):
         self.streamer, self.stop_event = streamer, stop_event
@@ -229,24 +233,56 @@ class _StreamerPlayback:
         except Exception as exc:
             logger.warning("Streaming TTS synthesis failed: %s", exc)
             return
-        self._prefetch_sem.acquire()
-        chunk_queue: queue.Queue[Optional[bytes]] = queue.Queue(maxsize=self._CHUNK_QUEUE_MAX)
+        # Stop-aware: with every slot held by a stalled prefetch, a plain acquire() wedged the
+        # text pump forever and tts_done never fired after a barge-in.
+        while not self._prefetch_sem.acquire(timeout=0.2):
+            if self.stop_event.is_set():
+                return
+        # The temp-file consumer drains a sentence only after the previous one finished playing,
+        # so a bound there truncated long sentences queued behind long playback. Memory stays
+        # capped per sentence by tts_streaming's byte cap; PortAudio drains live and keeps it.
+        chunk_queue: queue.Queue[Optional[bytes]] = queue.Queue(
+            maxsize=self._CHUNK_QUEUE_MAX if self._use_device else 0)
         self._audio_queue.put(chunk_queue)
+        self._sentence_count += 1
         self._prefetch_threads.append(threading.Thread(
-            target=self._consume_to_queue, args=(audio_iter, chunk_queue), daemon=True))
+            target=self._consume_to_queue, args=(audio_iter, chunk_queue, self._sentence_count, len(text)),
+            daemon=True))
         self._prefetch_threads[-1].start()
 
-    def _consume_to_queue(self, audio_iter: Iterator[bytes], chunk_queue: queue.Queue[Optional[bytes]]) -> None:
+    def _put_chunk(self, chunk_queue: queue.Queue[Optional[bytes]], chunk: bytes) -> bool:
+        """Timed put (30 s) that gives up as soon as the stop event is set; False when dropped."""
+        deadline = time.monotonic() + 30.0
+        while not self.stop_event.is_set():
+            try:
+                chunk_queue.put(chunk, timeout=min(0.2, max(0.0, deadline - time.monotonic())))
+                return True
+            except queue.Full:
+                if time.monotonic() >= deadline:
+                    raise
+        return False
+
+    def _consume_to_queue(self, audio_iter: Iterator[bytes], chunk_queue: queue.Queue[Optional[bytes]],
+                          index: int = 0, text_len: int = 0) -> None:
+        queued = 0
         try:
             for chunk in audio_iter:
-                if self.stop_event.is_set():
+                if self.stop_event.is_set() or not self._put_chunk(chunk_queue, chunk):
                     logger.info("TTS CUT: prefetch cancelled (stop_event set mid-sentence) — partial audio only")
                     break
-                chunk_queue.put(chunk, timeout=30.0)
+                queued += len(chunk)
         except Exception as exc:
-            logger.warning("TTS CUT: streaming TTS prefetch failed mid-sentence (partial audio only): %s", exc)
+            logger.warning(
+                "TTS CUT: streaming TTS prefetch failed mid-sentence (partial audio only): %s: %s "
+                "(sentence %d, %d chars, %d bytes queued)", type(exc).__name__, exc, index, text_len, queued)
         finally:
-            chunk_queue.put(None)  # sentinel: no more chunks
+            while True:  # sentinel: no more chunks. After a stop nobody may drain a full queue.
+                try:
+                    chunk_queue.put(None, timeout=0.2)
+                    break
+                except queue.Full:
+                    if self.stop_event.is_set():
+                        break
             self._prefetch_sem.release()
 
     def _play_sentence_via_tempfile(self, chunk_queue) -> None:
