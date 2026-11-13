@@ -128,3 +128,21 @@ Summary: base 2 passed / 19 failed; fix 21 passed.
 Must-stay-green subset after W3 (`test_voice_cli_integration`, `test_voice_mode`, `test_chat_turn_streaming_tts_arming`,
 `test_cli_ctrl_c_draft_priority`, `test_cli_status_bar`, `test_cli_backtrack_browse`, both gateway CLI-plugin files,
 `test_i18n`, W2 drain file): 204 passed, 1 failed = baseline `test_beep_calls_sounddevice_play`.
+
+## W4 — Ctrl+C / Ctrl+Q cut TTS (`cli_tui_mixin.py` +4 lines, helper in `cli_voice_mixin.py`)
+
+New file `tests/hermes_cli/test_cli_voice_ctrl_keys.py` (11 tests, real handlers on a `HermesCLI.__new__` stub).
+Red run against both the pre-W4 commit (`8c990d54cb`) and the base `3b42157858` copies of the two files: identical results.
+
+| Test | Base | Fix |
+|---|---|---|
+| batch speech + idle agent: cut, app stays open, no hard interrupt [ctrl_c, ctrl_q] (review §4.7) | FAIL ×2 (app exited, audio left playing) | pass |
+| playback tail: cut, no hard interrupt, no force-exit arming [ctrl_c, ctrl_q] (S1 §f.8) | FAIL ×2 | pass |
+| while generating: cut AND interrupt [ctrl_c, ctrl_q] (S1 §f.9) | FAIL ×2 (no cut) | pass |
+| typed draft + speech: first press cuts only, second clears the draft (review §4.8) | FAIL | pass |
+| no speech: today's behaviour (exit on empty idle prompt) [ctrl_c, ctrl_q] | pass (guard) | pass |
+| outside voice mode: never cuts | pass (guard) | pass |
+| backtrack picker override (`cli_backtrack.py:305-309`) still wins | pass (guard) | pass |
+
+Summary: base 4 passed / 7 failed; fix 11 passed. With `test_cli_ctrl_c_draft_priority`, `test_cli_backtrack_browse`,
+both gateway CLI-plugin files, the W3 file and `test_voice_cli_integration`: 84 passed, 0 failed.

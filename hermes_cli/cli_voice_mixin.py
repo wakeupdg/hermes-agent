@@ -147,6 +147,18 @@ class CLIVoiceMixin:
         threading.Thread(target=_start_recording, daemon=True).start()
         event.app.invalidate()
 
+    def _voice_ctrl_key_cut(self, reason: str) -> bool:
+        """Ctrl+C / Ctrl+Q while TTS is pending or audible: cut it first.
+
+        True = the press is used up: the agent is no longer generating (playback tail or batch
+        speech), so no hard interrupt, no force-exit arming and no exit on an empty prompt. While
+        it still generates the caller continues to its normal interrupt path.
+        """
+        if not self._voice_tts_cuttable():
+            return False
+        self._voice_cut_tts(reason)
+        return not self._voice_generating()
+
     def _voice_deferred_interrupt(self, thread) -> None:
         """A key-started mid-turn recording produced a transcript: interrupt the turn it was made in.
 

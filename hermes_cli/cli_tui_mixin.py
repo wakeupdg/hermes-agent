@@ -882,6 +882,8 @@ class CLITuiMixin:
             ("_model_picker_state", self._close_model_picker), ("_command_palette_state", self._close_command_palette),
             ("_gateway_command_wait", lambda: self._gateway_command_wait.set()))):
             return
+        if getattr(self, "_voice_mode", False) and self._voice_ctrl_key_cut("ctrl_c"):
+            return  # stopped the speech of a finished turn; never an interrupt or an exit
         overlay_cleared = self._tui_clear_blocking_overlays(event)
         if overlay_cleared and not (self._agent_running and self.agent):
             return
@@ -904,6 +906,8 @@ class CLITuiMixin:
         if self._tui_cancel_foreground_ui(event, closers=(
             ("_slash_confirm_state", lambda: self._submit_slash_confirm_response("cancel")),
             ("_model_picker_state", self._close_model_picker))):
+            return
+        if getattr(self, "_voice_mode", False) and self._voice_ctrl_key_cut("ctrl_q"):
             return
         overlay_cleared = self._tui_clear_blocking_overlays(event)
         if overlay_cleared and not (self._agent_running and self.agent):
