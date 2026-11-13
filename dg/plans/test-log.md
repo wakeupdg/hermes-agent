@@ -60,3 +60,22 @@ New file `tests/tools/test_tts_speaker_backpressure.py` (5 tests). Red = base `t
 Summary: base 0 passed / 5 failed (14.2 s); fix 5 passed (1.4 s).
 Related suites after W1 (`test_tts_streaming`, `test_tts_macos_output`, `test_voice_mode`, `test_voice_cli_integration`,
 `test_chat_turn_streaming_tts_arming`): 127 passed, 1 failed = baseline `test_beep_calls_sounddevice_play`.
+
+## W2 — turn drain loop (`hermes_cli/cli_chat_turn_mixin.py`)
+
+New file `tests/hermes_cli/test_chat_turn_tts_drain.py` (6 tests, fake speaker thread on a fake clock, entry point
+`_chat_settle_turn`). Red = base `cli_chat_turn_mixin.py`.
+
+| Test | Base | Fix |
+|---|---|---|
+| `test_reply_longer_than_two_minutes_is_not_cut` (S3 §7.9, review §4.5) | FAIL (join gave up at 120 s) | pass |
+| `test_message_typed_during_playback_cuts_the_audio` (review §4.4, M3) | FAIL (stop never set) | pass |
+| `test_stopped_pipeline_that_does_not_wind_down_is_left_after_the_grace` | FAIL (waited 120 s) | pass |
+| `test_stall_watchdog_stops_a_silent_pipeline` | FAIL (no stop, 120 s) | pass |
+| `test_app_exit_leaves_the_drain` | FAIL (ignored `_should_exit`) | pass |
+| `test_tts_done_set_by_another_writer_does_not_cut_the_reply` (review §4.6) | pass (guard: the base joined the thread too) | pass |
+
+Summary: base 1 passed / 5 failed; fix 6 passed. `test_chat_turn_streaming_tts_arming.py` + `test_voice_cli_integration.py`
++ the new file: 41 passed.
+
+Note: the baseline failure `test_beep_calls_sounddevice_play` was not investigated (it fails on the base code on this host).

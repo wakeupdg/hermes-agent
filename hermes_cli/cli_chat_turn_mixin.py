@@ -501,8 +501,8 @@ class CLIChatTurnMixin:
         if turn.use_streaming_tts and turn.text_queue is not None:
             turn.text_queue.put(None)  # end-of-text sentinel
             if turn.tts_thread is not None:
-                turn.tts_thread.join(timeout=120)
-                # A timed-out join leaves tts_normal_exit False so the release path's
+                self._chat_drain_tts(turn)
+                # A drain that gave up leaves tts_normal_exit False so the release path's
                 # stop_event kills the runaway worker.
                 turn.tts_normal_exit = not turn.tts_thread.is_alive()
         # Drain the StdoutProxy buffer so tool/status lines render ABOVE the response
@@ -520,6 +520,44 @@ class CLIChatTurnMixin:
             self.session_id = self.agent.session_id
             self._write_terminal_breadcrumb()
             self._pending_title = None
+
+    # Streaming-TTS drain bounds (class-level so tests can shrink them on an instance).
+    _TTS_STOP_GRACE_S = 5.0  # a stopped pipeline gets this long to wind down
+    _TTS_STALL_S = 45.0  # pipeline alive but no audio output this long = stalled
+
+    def _chat_drain_tts(self, turn):
+        """Wait for the speaker thread to finish the reply, however long it is.
+
+        Polls the thread itself (``_voice_tts_done`` has other writers). Leaves on app exit,
+        once a stop has been set for ``_TTS_STOP_GRACE_S``, or on a stall. A message typed
+        while the reply is still playing cuts the audio; it runs as the next turn.
+        """
+        from cli import logger
+        from tools.voice_mode import is_audio_output_active, stop_playback
+        thread, stop = turn.tts_thread, turn.stop_event
+        last_audio = time.monotonic()
+        stopped_at = None
+        while thread.is_alive():
+            thread.join(0.2)
+            now = time.monotonic()
+            if getattr(self, "_should_exit", False):
+                return
+            if is_audio_output_active():
+                last_audio = now
+            typed = getattr(self, "_interrupt_queue", None)
+            if not stop.is_set() and typed is not None and not typed.empty():
+                logger.info("TTS CUT: message typed during playback")
+                stop.set()
+                stop_playback()
+            if stop.is_set():
+                stopped_at = now if stopped_at is None else stopped_at
+                if now - stopped_at > self._TTS_STOP_GRACE_S:
+                    return
+            elif now - last_audio > self._TTS_STALL_S:
+                logger.warning("TTS drain: no audio for %.0fs while the speaker is still running; stopping it",
+                               now - last_audio)
+                stop.set()
+                return
 
     def _handle_discard_command(self, cmd_original: str):
         """/discard <admission_id>: acknowledge a turn the gateway lost in a restart without replaying
