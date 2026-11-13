@@ -16,6 +16,8 @@ import time
 
 from agent.i18n import t
 from hermes_constants import is_termux as _is_termux_environment
+from prompt_toolkit.key_binding.key_processor import KeyPress
+from prompt_toolkit.keys import Keys
 from typing import Optional
 
 
@@ -61,6 +63,7 @@ class CLIVoiceMixin:
     # Class-level defaults: test stubs built with HermesCLI.__new__ never run __init__.
     _turn_agent_thread = None  # the current chat() turn's agent thread ("generating" = alive)
     _voice_midturn_thread = None  # agent thread a key-started recording interrupted into
+    _voice_stop_key_quiet_until = 0.0  # monotonic time until which the Escape stop key stays off
 
     def _voice_generating(self) -> bool:
         """The model is still producing this turn (the agent thread is alive)."""
@@ -158,6 +161,25 @@ class CLIVoiceMixin:
             return False
         self._voice_cut_tts(reason)
         return not self._voice_generating()
+
+    def _voice_stop_key_active(self) -> bool:
+        """Filter for the Escape stop key: TTS is cuttable and no re-fed Escape is in flight."""
+        return time.monotonic() >= self._voice_stop_key_quiet_until and self._voice_tts_cuttable()
+
+    def _voice_stop_key_pressed(self, event) -> None:
+        """Escape while TTS is pending or audible: cut the speech, nothing else.
+
+        Escape is also the Alt prefix: when the same read already carried another key (Alt+Enter
+        = ESC CR, Alt+V, …) the Escape is fed back so that combination still reaches its binding.
+        The binding's filter stays off while that re-fed Escape is processed: the killed player
+        can report audio-active for a few more milliseconds, which would loop the re-feed.
+        """
+        self._voice_cut_tts("stop_key")
+        kp = event.key_processor
+        if kp.input_queue and kp.input_queue[0].key != Keys.Escape:
+            self._voice_stop_key_quiet_until = time.monotonic() + 1.5  # > pt's 1 s timeoutlen
+            kp.feed(KeyPress(Keys.Escape, "\x1b"), first=True)
+        event.app.invalidate()
 
     def _voice_deferred_interrupt(self, thread) -> None:
         """A key-started mid-turn recording produced a transcript: interrupt the turn it was made in.

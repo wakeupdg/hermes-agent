@@ -1882,6 +1882,7 @@ class CLITuiMixin:
                          or self._connection_state))
         kb.add('escape', filter=_modal_prompt_active, eager=True)(self._tui_handle_escape_modal)
         kb.add('escape', 'escape', filter=~_modal_prompt_active)(self._tui_handle_double_escape)
+        kb.add('escape', filter=Condition(self._voice_stop_key_active), eager=True)(self._voice_stop_key_pressed)
         kb.add('c-z')(self._tui_handle_ctrl_z)
 
         kb.add(*self._tui_voice_record_key_sequence())(self._tui_handle_voice_record)

@@ -146,3 +146,24 @@ Red run against both the pre-W4 commit (`8c990d54cb`) and the base `3b42157858` 
 
 Summary: base 4 passed / 7 failed; fix 11 passed. With `test_cli_ctrl_c_draft_priority`, `test_cli_backtrack_browse`,
 both gateway CLI-plugin files, the W3 file and `test_voice_cli_integration`: 84 passed, 0 failed.
+
+## W3b — Escape stops TTS (`cli_voice_mixin.py`, +1 binding in `cli_tui_mixin.py`; from sweep-4)
+
+New file `tests/hermes_cli/test_cli_voice_stop_key.py` (10 tests). They build the real Hermes key bindings
+(`_tui_build_key_bindings`) and drive a real prompt_toolkit 3.0.53 `Application` through a pipe input, so the VT100
+escape timeout and prefix matching are real. Red run against the pre-W3b commit (`3568e293ae`) and the base
+`3b42157858` copies of the two files.
+
+| Test | pre-W3b | base | Fix |
+|---|---|---|---|
+| Escape alone cuts the speech, draft kept | FAIL | FAIL | pass |
+| Escape while "Working…" before the first sentence stops the pipeline | FAIL | FAIL | pass |
+| Alt+Enter during playback cuts, then inserts a newline (not submitted) | FAIL | FAIL | pass |
+| Alt+Enter while the killed player still reports audio: cut once, no re-feed loop | FAIL | FAIL | pass |
+| two fast Escapes cut and do not clear the draft | FAIL | FAIL | pass |
+| Escape with a dialog open: first press cuts only, second cancels | FAIL | FAIL | pass |
+| no speech: Esc Esc still discards the draft (today's behaviour) | pass | pass | pass |
+| `_voice_tts_cuttable` covers done-clear / audible / live stop event (x3) | pass (added in W3) | FAIL | pass |
+
+Summary: fix 10 passed (run 4 times, stable, ~5 s). With the W3/W4 files, `test_cli_ctrl_c_draft_priority`,
+`test_cli_status_bar`, `test_cli_backtrack_browse`, `test_voice_cli_integration`: 124 passed, 0 failed.
