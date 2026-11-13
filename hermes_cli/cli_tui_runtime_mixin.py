@@ -73,12 +73,14 @@ class CLITuiRuntimeMixin:
         """Idle housekeeping between inputs (agent not running)."""
         self._check_config_mcp_changes()  # auto-reload MCP on mcp_servers change
         # Termios drift heal first: a drifted tty makes the CLI look dead while the loop is healthy.
+        # While a voice take is recording/transcribing, no notification, loop or goal turn may start.
+        voice_capture = getattr(self, "_voice_recording", False) or getattr(self, "_voice_processing", False)
         for step in (
             self._check_termios_drift,
             lambda: self._drain_process_notifications("cli-idle"),
             self._maybe_fire_loop_tick,
             self._maybe_resume_parked_goal,
-        ):
+        )[:1 if voice_capture else None]:
             with suppress(Exception):
                 step()
 
@@ -205,9 +207,11 @@ class CLITuiRuntimeMixin:
         # deferred as "worth its own review" and never re-landed (#20271).
         self._drain_interrupt_queue_to_pending_input()
 
-        # /goal continuation (queued user input still preempts), then /loop tick completion.
+        # /goal continuation (queued user input still preempts), then /loop tick completion. A voice
+        # take in progress is queued user input that has not landed yet: no continuation under it.
+        voice_capture = getattr(self, "_voice_recording", False) or getattr(self, "_voice_processing", False)
         for hook, what in (
-            (self._maybe_continue_goal_after_turn, "goal continuation"),
+            *(() if voice_capture else ((self._maybe_continue_goal_after_turn, "goal continuation"),)),
             (self._maybe_complete_loop_tick_after_turn, "loop completion"),
         ):
             try:
@@ -216,7 +220,7 @@ class CLITuiRuntimeMixin:
                 logging.debug("%s hook failed: %s", what, _exc)
 
         # Continuous voice: restart recording off-thread (beep + recorder start would block process_loop).
-        if self._voice_mode and self._voice_continuous and not self._voice_recording:
+        if self._voice_mode and self._voice_continuous and not voice_capture:
             def _restart_recording():
                 try:
                     if self._voice_tts:
@@ -231,8 +235,9 @@ class CLITuiRuntimeMixin:
                     _cprint(f"{_DIM}{t('cli.voice.autorestart_failed', error=e)}{_RST}")
             threading.Thread(target=_restart_recording, daemon=True).start()
 
-        with suppress(Exception):
-            self._drain_process_notifications("cli-post-turn")
+        if not voice_capture:  # drained by the idle tick once the take has landed
+            with suppress(Exception):
+                self._drain_process_notifications("cli-post-turn")
 
     def _tui_signal_handler(self, signum, frame):
         """SIGHUP/SIGTERM -> graceful shutdown.

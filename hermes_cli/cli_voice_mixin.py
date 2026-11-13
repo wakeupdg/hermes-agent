@@ -51,8 +51,124 @@ def _unlink_quietly(path) -> None:
         pass
 
 
+_MODAL_STATE_ATTRS = ("_clarify_state", "_sudo_state", "_approval_state", "_slash_confirm_state",
+                      "_connection_state")
+
+
 class CLIVoiceMixin:
     """Voice mode (recording, STT, TTS, full-duplex barge-in) and wake-word listener handlers for the interactive CLI"""
+
+    # Class-level defaults: test stubs built with HermesCLI.__new__ never run __init__.
+    _turn_agent_thread = None  # the current chat() turn's agent thread ("generating" = alive)
+    _voice_midturn_thread = None  # agent thread a key-started recording interrupted into
+
+    def _voice_generating(self) -> bool:
+        """The model is still producing this turn (the agent thread is alive)."""
+        thread = getattr(self, "_turn_agent_thread", None)
+        return thread is not None and thread.is_alive()
+
+    def _voice_modal_open(self) -> bool:
+        return any(getattr(self, name, None) for name in _MODAL_STATE_ATTRS)
+
+    def _voice_tts_cuttable(self) -> bool:
+        """TTS pending or audible: done-event clear, audio on the speakers, or a live un-set stop event."""
+        done = getattr(self, "_voice_tts_done", None)
+        stop = getattr(self, "_voice_tts_stop", None)
+        try:
+            from tools.voice_mode import is_audio_output_active
+            audible = is_audio_output_active()
+        except Exception:
+            audible = False
+        return bool((done is not None and not done.is_set()) or audible or (stop is not None and not stop.is_set()))
+
+    def _voice_cut_tts(self, reason: str) -> None:
+        """Silence TTS now: stop the live pipeline (streaming or batch), kill the player, mark done.
+
+        Non-blocking (``stop_playback`` only terminates a process), so key handlers call it on the
+        event loop. ``_voice_tts_done`` is set synchronously: the cut is observable at once.
+        """
+        from cli import logger
+        stop = getattr(self, "_voice_tts_stop", None)  # snapshot: another thread resets it
+        if stop is not None:
+            stop.set()
+        try:
+            from tools.voice_mode import is_audio_output_active, stop_playback
+            from tools.tts_streaming import mark_speech_interrupted
+            logger.info("TTS CUT: %s (agent_running=%s generating=%s audible=%s continuous=%s)",
+                        reason, getattr(self, "_agent_running", False), self._voice_generating(),
+                        is_audio_output_active(), getattr(self, "_voice_continuous", False))
+            mark_speech_interrupted()
+            stop_playback()
+        except Exception:
+            logger.debug("TTS cut failed", exc_info=True)
+        done = getattr(self, "_voice_tts_done", None)
+        if done is not None:
+            done.set()
+
+    def _voice_record_key_pressed(self, event) -> None:
+        """The record key (``voice.record_key``). Runs on prompt_toolkit's event-loop thread:
+        anything that can block (locks held by the recorder, beeps, config I/O) goes to a thread.
+
+        Mid-turn a press never interrupts the turn: it cuts TTS, keeps continuous mode on and
+        starts recording; the turn is interrupted only once that recording yields a transcript
+        (``_voice_deferred_interrupt``). With a modal prompt open it only cuts TTS.
+        """
+        from cli import _DIM, _RST, _cprint
+        if not self._voice_mode:
+            return
+        if self._voice_recording:
+            # Ending your own take keeps continuous mode where silence auto-stop exists; without it
+            # (Termux) the key is the only way to end a take, so it still ends continuous mode.
+            if not getattr(self._voice_recorder, "supports_silence_autostop", True):
+                with self._voice_lock:
+                    self._voice_continuous = False
+            event.app.invalidate()
+            threading.Thread(target=self._voice_stop_and_transcribe, daemon=True).start()
+            return
+        if self._voice_processing:
+            return  # STT is running; its transcript is on the way
+        if self._voice_tts_cuttable():
+            self._voice_cut_tts("record_key")
+        if self._voice_modal_open() or self._voice_barge_capture.is_set():
+            event.app.invalidate()  # modal: cut only; barge capture already owns the mic
+            return
+        midturn = getattr(self, "_turn_agent_thread", None) if self._voice_generating() else None
+        with self._voice_lock:
+            self._voice_continuous = True
+            self._voice_midturn_thread = midturn
+
+        def _start_recording():
+            try:
+                self._voice_start_recording()
+                self._voice_invalidate()
+            except Exception as e:
+                _cprint(f"\n{_DIM}{t('cli.tui.voice_recording_failed', error=e)}{_RST}")
+
+        threading.Thread(target=_start_recording, daemon=True).start()
+        event.app.invalidate()
+
+    def _voice_deferred_interrupt(self, thread) -> None:
+        """A key-started mid-turn recording produced a transcript: interrupt the turn it was made in.
+
+        Re-checked right before the call (the turn may have ended meanwhile); never with a modal
+        open. Off the caller's thread: ``GatewayAgent.interrupt`` is an RPC that can block 5 s.
+        """
+        from cli import _DIM, _RST, _cprint, logger
+        agent = getattr(self, "agent", None)
+        if (thread is None or agent is None or thread is not getattr(self, "_turn_agent_thread", None)
+                or not thread.is_alive() or self._voice_modal_open()):
+            return
+
+        def _interrupt():
+            if not thread.is_alive():
+                return
+            try:
+                _cprint(f"\n{_DIM}{t('cli.voice.interjection')}{_RST}")
+                agent.interrupt()
+            except Exception as e:
+                logger.debug("voice deferred interrupt failed: %s", e)
+
+        threading.Thread(target=_interrupt, daemon=True, name="voice-deferred-interrupt").start()
 
     def _voice_invalidate(self) -> None:
         """Repaint the TUI (audio level indicator / status) when the app is live."""
@@ -198,6 +314,7 @@ class CLIVoiceMixin:
                 return
             self._voice_recording = False
             self._voice_processing = True
+            midturn_thread, self._voice_midturn_thread = self._voice_midturn_thread, None
 
         submitted = False
         transcription_failed = False
@@ -231,6 +348,7 @@ class CLIVoiceMixin:
                 self._voice_invalidate()
                 self._pending_input.put(_VoiceInputMessage(transcript))
                 submitted = True
+                self._voice_deferred_interrupt(midturn_thread)
             elif result.get("success"):
                 _cprint(f"{_DIM}{t('cli.voice.no_speech')}{_RST}")
             else:
@@ -283,8 +401,8 @@ class CLIVoiceMixin:
 
     def _voice_speak_response_async(self, text: str) -> None:
         """Schedule TTS and mark it pending before continuous recording can restart."""
-        if not self._voice_tts or not text:
-            return
+        if not self._voice_tts or not text or getattr(self, "_voice_recording", False):
+            return  # the user already started talking over the end of the turn: don't speak over them
         self._voice_tts_done.clear()
         threading.Thread(target=self._voice_speak_response, args=(text,), daemon=True).start()
         # Barge-in safety net for speak calls outside a chat turn (the agent-turn listener
@@ -297,6 +415,10 @@ class CLIVoiceMixin:
         from cli import _DIM, _RST, _cprint, logger
         if not self._voice_tts:
             return
+        # Its own stop event in the shared slot: every cutter (record key, listener, Ctrl+C,
+        # /voice off) reaches the batch player too and the chunk loop below stops.
+        stop = threading.Event()
+        self._voice_tts_stop = stop
         self._voice_tts_done.clear()
         try:
             from tools.tts_tool import text_to_speech_tool
@@ -336,6 +458,8 @@ class CLIVoiceMixin:
             # The tool result is authoritative — chunked long-form output returns several files.
             play_paths = tts_result.get("file_paths") or [tts_result.get("file_path") or mp3_path]
             for play_path in play_paths if tts_result.get("success") else []:
+                if stop.is_set():
+                    break
                 if os.path.isfile(play_path) and os.path.getsize(play_path) > 0:
                     play_audio_file(play_path)
             # Clean up all generated files (play_paths + mp3_path + ogg variant)
@@ -345,6 +469,8 @@ class CLIVoiceMixin:
             logger.warning("Voice TTS playback failed: %s", e)
             _cprint(f"{_DIM}{t('cli.voice.tts_failed', error=e)}{_RST}")
         finally:
+            if self._voice_tts_stop is stop:
+                self._voice_tts_stop = None
             self._voice_tts_done.set()
 
     def _voice_full_duplex_listener(self) -> None:
@@ -385,6 +511,8 @@ class CLIVoiceMixin:
             def _should_stop() -> bool:
                 if not (getattr(self, "_voice_mode", False) and getattr(self, "_voice_continuous", False)):
                     return True
+                if getattr(self, "_voice_recording", False):
+                    return True  # the record key took the mic: never capture the same utterance twice
                 if getattr(self, "_agent_running", False):
                     return False
                 # Agent finished — keep listening until TTS fully played.
@@ -393,6 +521,9 @@ class CLIVoiceMixin:
                 return not is_audio_output_active()
 
             def _on_trigger(phase: str) -> None:
+                if getattr(self, "_voice_recording", False):
+                    logger.info("full-duplex listener trip discarded: the record key owns the mic")
+                    return
                 # Latch BEFORE cutting anything: suppresses process_loop's auto-restart until
                 # the capture is submitted.
                 self._voice_barge_capture.set()
@@ -425,6 +556,7 @@ class CLIVoiceMixin:
             if wav_path and self._voice_barge_capture.is_set():
                 self._voice_submit_barge_utterance(wav_path)
             else:
+                _unlink_quietly(wav_path)  # a discarded trip still captured a take
                 self._voice_barge_capture.clear()
         except Exception as e:
             self._voice_barge_capture.clear()

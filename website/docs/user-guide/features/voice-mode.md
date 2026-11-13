@@ -151,7 +151,7 @@ Then use these commands inside the CLI:
 7. If TTS is enabled, the agent's reply is spoken aloud
 8. Recording **automatically restarts** — speak again without pressing any key
 
-This loop continues until you press **Ctrl+B** during recording (exits continuous mode) or 3 consecutive recordings detect no speech.
+This loop continues until you press **Ctrl+C** during recording, say the stop phrase, run `/voice off`, or 3 consecutive recordings detect no speech. Pressing **Ctrl+B** during recording sends the take right away and keeps the loop going (on Termux, where there is no silence auto-stop, it also ends the loop). Pressing it while Hermes is speaking or working cuts the speech and starts recording; the turn is interrupted only once you have actually said something.
 
 :::tip
 The record key is configurable via `voice.record_key` in `~/.hermes/config.yaml` (default: `ctrl+b`).

@@ -2297,7 +2297,7 @@ cli:
     err_audio_capture: "Voice mode requires audio capture."
     err_stt_provider: "Voice mode requires an STT provider for transcription.\nRun hermes tools and configure Speech-to-Text, then restart Hermes."
     silence_autostop: "Silence detected, auto-stopping..."
-    hint_continuous: "auto-stops on silence | {shortcut} to stop & exit continuous"
+    hint_continuous: "auto-stops on silence | {shortcut} to stop now (continuous stays on)"
     hint_termux: "Termux:API capture | {shortcut} to stop"
     hint_stop: "{shortcut} to stop"
     recording: "● Recording..."

@@ -1349,6 +1349,8 @@ class _BargeDetector:
         self.floor_locked = self.playing_prev = self.playback_seen = False
         self.grace_remaining = self.block_idx = 0
         self.blocks_since_playback = 10_000
+        self.peak_playback_rms = 0.0  # loudest block heard while TTS played (D3 tuning log)
+        self.tripped: Optional[str] = None
 
     def _floor(self) -> tuple:
         """(pct90, floor): 90th percentile of the quiet window; floor never below the silence threshold."""
@@ -1381,6 +1383,8 @@ class _BargeDetector:
     def feed(self, rms: float, playing: bool) -> Optional[str]:
         """Consume one 30ms block; return the phase name when speech trips, else None."""
         self.block_idx += 1
+        if playing:
+            self.peak_playback_rms = max(self.peak_playback_rms, rms)
         if not self.floor_locked and not self._calibrate(rms, playing):
             return None
         self._track_playback(playing)
@@ -1407,6 +1411,7 @@ class _BargeDetector:
                      f"window={sum(self.recent_above)}/{self.trip_needed} phase={phase}")
         if not (above and sum(self.recent_above) >= self.trip_needed):
             return None
+        self.tripped = phase
         _vad_log(f"TRIPPED ({phase}): block={self.block_idx} rms={rms:.0f} floor={self.quiet_floor:.0f} "
                  f"trigger={trigger:.0f} window={sum(self.recent_above)}/{len(self.recent_above)}")
         return phase
@@ -1458,6 +1463,12 @@ def full_duplex_listen(
                                             max_blocks=max(1, max_utterance_ms // 30))
     except Exception as e:
         logger.debug("Full-duplex listener failed: %s", e)
+    finally:
+        # One line per listener so the playback trigger can be tuned from agent.log (plan-v2 D3).
+        logger.info("Full-duplex listener exit: tripped=%s floor=%.0f playback_trigger=%.0f "
+                    "peak_playback_rms=%.0f mult=%g", detector.tripped, detector.quiet_floor,
+                    min(max(detector.quiet_floor * detector.mult, PLAYBACK_MIN_TRIGGER), TRIGGER_CEILING),
+                    detector.peak_playback_rms, detector.mult)
     return None
 
 

@@ -93,3 +93,38 @@ New file `tests/tools/test_voice_player_signal_stop.py` (4 tests). Red = base `t
 
 Summary: base 1 passed / 3 failed; fix 4 passed. `test_voice_mode.py` + `test_tts_macos_output.py` + new file:
 only the baseline `test_beep_calls_sounddevice_play` fails.
+
+## W3 — record key, cut helper, listener guards (`cli_voice_mixin.py`, small hunks elsewhere)
+
+New files `tests/hermes_cli/test_cli_voice_record_key.py` (20 tests) and `tests/tools/test_voice_listener_exit_log.py`
+(1 test, the D3 exit line). Red = base copies of `cli_voice_mixin.py`, `cli_tui_mixin.py`, `cli_chat_turn_mixin.py`,
+`cli_tui_runtime_mixin.py`, `tools/voice_mode.py`. Entry point is the real `_tui_handle_voice_record`.
+
+| Test | Base | Fix |
+|---|---|---|
+| key during playback tail cuts and records (S1 §f.1) | FAIL | pass |
+| key while generating and speaking: cut + record, no interrupt on press (S1 §f.2, D2) | FAIL | pass |
+| key in a gap between sentences still cuts (review §4.1) | FAIL | pass |
+| key during silent generation cuts the pending reply and records (S1 §f.3, D2) | FAIL | pass |
+| key while transcribing is ignored, continuous kept (S1 §f.4) | FAIL | pass |
+| key while listener captures: cut, no second recording (S1 §f.5) | FAIL | pass |
+| key with a modal open only cuts (review §4.2) | FAIL | pass |
+| key ending your own take keeps continuous (D1) | FAIL | pass |
+| key ending a take without silence auto-stop still ends continuous (D1 Termux) | pass (guard) | pass |
+| key when idle arms and records | pass (guard) | pass |
+| transcript from a mid-turn take interrupts the live turn once; transcript on `_pending_input` (review §4.3) | FAIL | pass |
+| no interrupt when the turn already ended (review §4.3) | FAIL (base cannot start a mid-turn take at all) | pass |
+| no interrupt for an empty take | FAIL (same precondition) | pass |
+| no interrupt while a modal is open | FAIL (same precondition) | pass |
+| listener stops once the record key records (S1 §f.7) | FAIL | pass |
+| listener trip discarded while the record key records (wav removed) | FAIL | pass |
+| batch cut during synthesis plays nothing; batch stop slot released (review §4.12) | FAIL | pass |
+| batch reply not spoken over a recording (review MINOR 4) | FAIL | pass |
+| idle tick starts no notification/loop/goal turn while recording (W3.7) | FAIL | pass |
+| after-turn skips goal continuation + notification drain while recording (W3.7) | FAIL | pass |
+| listener exit logs floor / trigger / peak playback RMS (D3) | FAIL | pass |
+
+Summary: base 2 passed / 19 failed; fix 21 passed.
+Must-stay-green subset after W3 (`test_voice_cli_integration`, `test_voice_mode`, `test_chat_turn_streaming_tts_arming`,
+`test_cli_ctrl_c_draft_priority`, `test_cli_status_bar`, `test_cli_backtrack_browse`, both gateway CLI-plugin files,
+`test_i18n`, W2 drain file): 204 passed, 1 failed = baseline `test_beep_calls_sounddevice_play`.

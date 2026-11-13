@@ -123,6 +123,7 @@ class CLIChatTurnMixin:
                 # Daemon: closing the terminal tab (SIGHUP) must not be kept alive by it.
                 agent_thread = threading.Thread(target=self._chat_run_agent, args=(turn, message), daemon=True)
                 agent_thread.start()
+                self._turn_agent_thread = agent_thread  # "generating" for the voice keys
                 interrupt_msg = self._chat_monitor_agent_thread(turn, agent_thread)
                 self._chat_settle_turn(turn)
                 return self._chat_render_turn(turn, agent_thread, interrupt_msg)
@@ -155,6 +156,9 @@ class CLIChatTurnMixin:
             turn.stop_event.set()
         if turn.tts_thread is not None and turn.tts_thread.is_alive():
             turn.tts_thread.join(timeout=5)
+        # The slot means "a live pipeline": never leave this turn's spent event in it.
+        if turn.stop_event is not None and getattr(self, "_voice_tts_stop", None) is turn.stop_event:
+            self._voice_tts_stop = None
 
     def _chat_route_images(self, message, images):
         """Attach images natively (vision model) or pre-describe them as text; returns the message to send.

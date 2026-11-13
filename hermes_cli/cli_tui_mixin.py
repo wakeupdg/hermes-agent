@@ -815,61 +815,8 @@ class CLITuiMixin:
             return []
 
     def _tui_handle_voice_record(self, event):
-        """Toggle voice recording when voice mode is active.
-
-        Runs on prompt_toolkit's event-loop thread: any blocking call here (locks, sd.wait,
-        disk I/O) freezes the whole UI, so all heavy work goes to daemon threads.
-        """
-        from cli import _DIM, _RST, _cprint, logger
-        if not self._voice_mode:
-            return
-        if self._voice_recording:
-            # Always allow STOPPING (even while the agent runs); manual stop ends continuous
-            # mode. Flag clearing happens atomically inside _voice_stop_and_transcribe.
-            with self._voice_lock:
-                self._voice_continuous = False
-            event.app.invalidate()
-            threading.Thread(target=self._voice_stop_and_transcribe, daemon=True).start()
-            return
-        # Allow disarming continuous mode while the agent runs or transcribes — otherwise the
-        # user is stuck in an auto-restart loop until /voice off.
-        if self._agent_running or self._voice_processing:
-            with self._voice_lock:
-                self._voice_continuous = False
-            event.app.invalidate()
-            return
-        # Don't START recording during interactive prompts.
-        if (self._clarify_state or self._sudo_state or self._approval_state
-                or self._slash_confirm_state or self._connection_state):
-            return
-        # Cut TTS so the user can start talking: stop_playback() just terminates a subprocess;
-        # the stop event drains the streaming pipeline if one is live.
-        if not self._voice_tts_done.is_set():
-            try:
-                logger.info("TTS CUT: record key handler cutting TTS")
-                from tools.tts_streaming import mark_speech_interrupted
-                mark_speech_interrupted()
-                if self._voice_tts_stop is not None:
-                    self._voice_tts_stop.set()
-                from tools.voice_mode import stop_playback
-                stop_playback()
-                self._voice_tts_done.set()
-            except Exception:
-                pass
-        with self._voice_lock:
-            self._voice_continuous = True
-
-        # play_beep(sd.wait), AudioRecorder.start(lock) and config I/O must never block the loop.
-        def _start_recording():
-            try:
-                self._voice_start_recording()
-                if hasattr(self, '_app') and self._app:
-                    self._app.invalidate()
-            except Exception as e:
-                _cprint(f"\n{_DIM}{t('cli.tui.voice_recording_failed', error=e)}{_RST}")
-
-        threading.Thread(target=_start_recording, daemon=True).start()
-        event.app.invalidate()
+        """Record key; the state machine lives in ``CLIVoiceMixin._voice_record_key_pressed``."""
+        self._voice_record_key_pressed(event)
 
     def _tui_cancel_voice_recording(self, event) -> bool:
         """Cancel an active recording; True when one was cancelled (caller stops there)."""
