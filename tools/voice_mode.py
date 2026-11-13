@@ -1109,6 +1109,11 @@ def _run_system_player(cmd: list[str]) -> bool:
         rc = proc.returncode
         if rc == 0:
             return True
+        if rc is not None and rc < 0:
+            # Killed by a signal: stop_playback() (barge-in, record key, Ctrl+C) or an external
+            # kill. That is a stop, not a failure — trying the next player replayed the sentence.
+            logger.debug("System player %s stopped by signal %d", cmd[0], -rc)
+            return True
         # e.g. WSL ffplay/aplay with no audio device — fall through to the next player.
         logger.debug("System player %s exited with code %d, trying next", cmd[0], rc)
     except subprocess.TimeoutExpired:

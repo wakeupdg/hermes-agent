@@ -79,3 +79,17 @@ Summary: base 1 passed / 5 failed; fix 6 passed. `test_chat_turn_streaming_tts_a
 + the new file: 41 passed.
 
 Note: the baseline failure `test_beep_calls_sounddevice_play` was not investigated (it fails on the base code on this host).
+
+## W1b — killed player is a stop (`tools/voice_mode.py`, from sweep-4 §3.0)
+
+New file `tests/tools/test_voice_player_signal_stop.py` (4 tests). Red = base `tools/voice_mode.py`.
+
+| Test | Base | Fix |
+|---|---|---|
+| `test_player_killed_by_a_signal_launches_no_other_player[-15]` | FAIL (fallback player launched) | pass |
+| `test_player_killed_by_a_signal_launches_no_other_player[-9]` | FAIL | pass |
+| `test_stop_playback_mid_sentence_plays_nothing_else` (real child process, `platforms("posix")`) | FAIL (second player launched) | pass |
+| `test_player_that_genuinely_fails_still_falls_through` (rc=1 guard) | pass | pass |
+
+Summary: base 1 passed / 3 failed; fix 4 passed. `test_voice_mode.py` + `test_tts_macos_output.py` + new file:
+only the baseline `test_beep_calls_sounddevice_play` fails.
